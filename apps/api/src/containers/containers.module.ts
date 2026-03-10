@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ContainersController } from './containers.controller';
 import { ContainersService } from './containers.service';
+import { DockerLogsService } from './docker-logs.service';
 import { Container } from './entities/container.entity';
 import { ServersModule } from '../servers/servers.module';
 import { AlertsModule } from '../alerts/alerts.module';
@@ -16,7 +17,8 @@ import { Server } from '../servers/entities/server.entity';
     WebsocketModule,
   ],
   controllers: [ContainersController],
-  providers: [ContainersService],
+  providers: [ContainersService, DockerLogsService],
   exports: [ContainersService],
 })
 export class ContainersModule {}
+

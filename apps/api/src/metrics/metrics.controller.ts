@@ -13,7 +13,12 @@ export class MetricsController {
   @UseGuards(ApiKeyGuard)
   @Post('ingest')
   ingest(@Request() req, @Body() body: any) {
-    return this.metricsService.ingest({ ...body, serverId: req.user.id });
+    let clientIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || req.ip;
+    if (Array.isArray(clientIp)) clientIp = clientIp[0];
+    if (clientIp?.includes(',')) clientIp = clientIp.split(',')[0].trim();
+    if (clientIp?.startsWith('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
+
+    return this.metricsService.ingest({ ...body, serverId: req.user.id, ip: clientIp });
   }
 
   @UseGuards(JwtAuthGuard)

@@ -60,6 +60,8 @@ export const containersApi = {
     api.get(`/containers${serverId ? `?serverId=${serverId}` : ''}`).then((r) => r.data),
   get: (id: string) => api.get(`/containers/${id}`).then((r) => r.data),
   stats: () => api.get('/containers/stats').then((r) => r.data),
+  logs: (dockerId: string, tail = 100, timestamps = true) =>
+    api.get(`/containers/${dockerId}/logs?tail=${tail}&timestamps=${timestamps}`).then((r) => r.data),
 };
 
 // ─── Alerts ───────────────────────────────────────────────────────────────────

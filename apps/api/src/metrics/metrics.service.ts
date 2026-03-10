@@ -8,6 +8,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 
 interface AgentPayload {
   serverId: string;
+  ip?: string;
   cpuUsage: number;
   ramUsage: number;
   diskUsage: number;
@@ -46,6 +47,7 @@ export class MetricsService {
 
     // Update server current state
     await this.serversService.updateHeartbeat(payload.serverId, {
+      ip: payload.ip,
       cpuUsage: payload.cpuUsage,
       ramUsage: payload.ramUsage,
       diskUsage: payload.diskUsage,

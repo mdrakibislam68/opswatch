@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/opswatch/agent/internal/api"
 	"github.com/opswatch/agent/internal/collectors"
 	"github.com/opswatch/agent/internal/docker"
 	"github.com/opswatch/agent/internal/sender"
@@ -32,6 +33,15 @@ func main() {
 
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
+
+	// Start Agent API Server
+	agentPort := getEnv("OPSWATCH_AGENT_PORT", "4001")
+	apiServer := api.NewServer(dockerClient)
+	go func() {
+		if err := apiServer.Start(agentPort); err != nil {
+			log.Fatalf("Agent API server failed: %v", err)
+		}
+	}()
 
 	for {
 		<-ticker.C

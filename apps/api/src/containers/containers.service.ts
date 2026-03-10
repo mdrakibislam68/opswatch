@@ -22,6 +22,10 @@ export class ContainersService {
     return this.containerRepo.findOne({ where: { id } });
   }
 
+  async findByDockerId(dockerId: string) {
+    return this.containerRepo.findOne({ where: { dockerId }, relations: ['server'] });
+  }
+
   async syncFromAgent(serverId: string, containers: any[]) {
     // Get existing containers for this server
     const existing = await this.containerRepo.find({ where: { serverId } });

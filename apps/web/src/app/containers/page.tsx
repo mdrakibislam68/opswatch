@@ -1,11 +1,11 @@
 'use client';
 import { Suspense } from 'react';
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { containersApi } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { formatBytes, formatRelative } from '@/lib/utils';
-import { Box, Search } from 'lucide-react';
+import { Box, Search, FileText } from 'lucide-react';
 
 const STATUS_COLORS: Record<string, string> = {
   running: 'badge-online',
@@ -17,6 +17,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 function ContainersContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const serverId = searchParams.get('serverId');
   const [containers, setContainers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -92,13 +93,14 @@ function ContainersContent() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[#1e2d4a] text-xs text-slate-500">
-                  <th className="text-left px-5 py-3 font-medium">Container</th>
+                                  <th className="text-left px-5 py-3 font-medium">Container</th>
                   <th className="text-left px-5 py-3 font-medium">Image</th>
                   <th className="text-left px-5 py-3 font-medium">Status</th>
                   <th className="text-right px-5 py-3 font-medium">CPU</th>
                   <th className="text-right px-5 py-3 font-medium">Memory</th>
                   <th className="text-right px-5 py-3 font-medium">Restarts</th>
                   <th className="text-right px-5 py-3 font-medium">Updated</th>
+                  <th className="text-right px-5 py-3 font-medium">Logs</th>
                 </tr>
               </thead>
               <tbody>
@@ -125,11 +127,21 @@ function ContainersContent() {
                     <td className="px-5 py-3 text-right">
                       <span className="text-xs text-slate-600">{formatRelative(c.updatedAt)}</span>
                     </td>
+                    <td className="px-5 py-3 text-right">
+                      <button
+                        onClick={() => router.push(`/containers/${c.dockerId || c.id}/logs`)}
+                        className="btn-ghost py-1 px-2 text-xs gap-1 text-slate-400 hover:text-blue-400"
+                        title="View logs"
+                      >
+                        <FileText size={12} />
+                        Logs
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-16 text-center text-slate-600">
+                    <td colSpan={8} className="py-16 text-center text-slate-600">
                       <Box size={36} className="mx-auto mb-2 text-slate-700" />
                       No containers found
                     </td>

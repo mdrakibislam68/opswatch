@@ -60,7 +60,14 @@ export class ContainersService {
 
     // Remove containers no longer present
     const removed = Array.from(existingMap.values());
-    if (removed.length) await this.containerRepo.remove(removed);
+    if (removed.length) {
+      for (const r of removed) {
+        if (r.status === 'running') {
+          await this.alertsService.triggerContainerDown(serverId, r.name, r.dockerId);
+        }
+      }
+      await this.containerRepo.remove(removed);
+    }
 
     const all = await this.findAll(serverId);
     this.eventsGateway.emitContainersUpdate(serverId, all);

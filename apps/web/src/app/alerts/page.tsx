@@ -53,7 +53,12 @@ export default function AlertsPage() {
 
   const createRule = async () => {
     try {
-      const r = await alertsApi.createRule({ ...form, serverId: form.serverId || undefined });
+      const payload: any = { ...form, serverId: form.serverId || undefined };
+      if (!['cpu', 'ram', 'disk'].includes(form.type)) {
+        delete payload.threshold;
+        delete payload.operator;
+      }
+      const r = await alertsApi.createRule(payload);
       setRules((prev) => [r, ...prev]);
       setShowAdd(false);
       toast.success('Alert rule created');
@@ -69,6 +74,10 @@ export default function AlertsPage() {
   };
 
   const hasThreshold = ['cpu', 'ram', 'disk'].includes(form.type);
+
+  const metricTypesWithThreshold = ['cpu', 'ram', 'disk'];
+  const ruleHasPercentageThreshold = (type: string, threshold: unknown) =>
+    metricTypesWithThreshold.includes(String(type).toLowerCase()) && threshold != null && Number(threshold) > 0;
 
   return (
     <div className="p-6 space-y-6 animate-fadeIn">
@@ -191,7 +200,7 @@ export default function AlertsPage() {
                   <span className="text-xs text-slate-500 bg-[#1e2d4a] px-2 py-0.5 rounded">{rule.type}</span>
                 </div>
                 <p className="text-xs text-slate-500 mt-1">
-                  {rule.threshold ? `Triggers when ${rule.type.toUpperCase()} ${rule.operator} ${rule.threshold}%` : `Triggers on ${rule.type.replace('_', ' ')}`}
+                  {ruleHasPercentageThreshold(rule.type, rule.threshold) ? `Triggers when ${String(rule.type).toUpperCase()} ${rule.operator} ${rule.threshold}%` : `Triggers on ${String(rule.type).replace(/_/g, ' ')}`}
                   {' · '}Channels: {rule.channels}
                 </p>
               </div>

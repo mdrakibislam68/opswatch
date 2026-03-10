@@ -81,12 +81,15 @@ export class AlertsService {
   }
 
   async triggerContainerDown(serverId: string, containerName: string, containerId: string) {
-    const rules = await this.ruleRepo.find({ where: { type: 'container_down' } });
+    const rules = await this.ruleRepo.find({
+      where: [{ type: 'container_down', serverId }, { type: 'container_down', serverId: null }],
+    });
     for (const rule of rules) {
       if (!rule.isActive) continue;
       await this.fireAlert(rule, {
         serverId,
         containerName,
+        containerId,
         severity: 'critical',
         message: `Container "${containerName}" stopped`,
         value: 0,

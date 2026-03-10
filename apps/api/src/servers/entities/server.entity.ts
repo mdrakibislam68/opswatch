@@ -42,10 +42,10 @@ export class Server {
   @Column({ nullable: true })
   arch: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'bigint', nullable: true })
   totalRam: number;
 
-  @Column({ nullable: true })
+  @Column({ type: 'bigint', nullable: true })
   totalDisk: number;
 
   @Column({ nullable: true })

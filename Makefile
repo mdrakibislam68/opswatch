@@ -67,6 +67,9 @@ agent-docker-amd64: ## Build agent Docker image for AMD64
 agent-docker-arm64: ## Build agent Docker image for ARM64
 	PLATFORM=linux/arm64 $(MAKE) agent-docker
 
+agent-export: ## Export the agent image to a tarball
+	docker save opswatch-agent:latest | gzip > opswatch-agent.tar.gz
+
 # ─── Database ───────────────────────────────────────────────
 db-shell: ## Open PostgreSQL shell
 	$(COMPOSE) exec postgres psql -U opswatch -d opswatch

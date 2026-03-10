@@ -34,7 +34,7 @@ export class Metric {
   @Column({ type: 'bigint', nullable: true })
   netTx: number;
 
-  @Column({ nullable: true })
+  @Column({ type: 'bigint', nullable: true })
   uptimeSeconds: number;
 
   @CreateDateColumn()

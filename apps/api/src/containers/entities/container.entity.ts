@@ -45,10 +45,10 @@ export class Container {
   @Column({ type: 'simple-array', nullable: true })
   ports: string[];
 
-  @Column({ nullable: true })
+  @Column({ type: 'bigint', nullable: true })
   networkRx: number;
 
-  @Column({ nullable: true })
+  @Column({ type: 'bigint', nullable: true })
   networkTx: number;
 
   @UpdateDateColumn()

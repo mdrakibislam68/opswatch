@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { containersApi } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { formatBytes, formatRelative } from '@/lib/utils';
-import { Box, Search, FileText } from 'lucide-react';
+import { Box, Search, FileText, Terminal } from 'lucide-react';
 
 const STATUS_COLORS: Record<string, string> = {
   running: 'badge-online',
@@ -128,14 +128,24 @@ function ContainersContent() {
                       <span className="text-xs text-slate-600">{formatRelative(c.updatedAt)}</span>
                     </td>
                     <td className="px-5 py-3 text-right">
-                      <button
-                        onClick={() => router.push(`/containers/${c.dockerId || c.id}/logs`)}
-                        className="btn-ghost py-1 px-2 text-xs gap-1 text-slate-400 hover:text-blue-400"
-                        title="View logs"
-                      >
-                        <FileText size={12} />
-                        Logs
-                      </button>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => router.push(`/containers/${c.dockerId || c.id}/logs`)}
+                          className="btn-ghost py-1 px-2 text-xs gap-1 text-slate-400 hover:text-blue-400"
+                          title="View logs"
+                        >
+                          <FileText size={12} />
+                          Logs
+                        </button>
+                        <button
+                          onClick={() => router.push(`/containers/${c.dockerId || c.id}/terminal`)}
+                          className="btn-ghost py-1 px-2 text-xs gap-1 text-slate-400 hover:text-green-400"
+                          title="Interactive terminal"
+                        >
+                          <Terminal size={12} />
+                          Terminal
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

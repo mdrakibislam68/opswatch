@@ -8,6 +8,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.0
 	github.com/shirou/gopsutil/v3 v3.24.1
 	github.com/joho/godotenv v1.5.1
+	github.com/gorilla/websocket v1.5.1
 )
 
 require (

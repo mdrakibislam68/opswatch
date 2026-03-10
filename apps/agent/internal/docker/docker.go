@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"fmt"
 
 	dockerTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -120,4 +121,49 @@ func formatPort(p dockerTypes.Port) string {
 		return strings.Join([]string{p.IP, ":", string(rune(p.PublicPort)), "->", string(rune(p.PrivatePort)), "/", p.Type}, "")
 	}
 	return ""
+}
+
+func (c *Client) ExecTerminal(ctx context.Context, idOrName string, cmd []string) (dockerTypes.HijackedResponse, error) {
+	// First verify container is running and resolve full ID
+	fullID, err := c.ResolveContainerID(ctx, idOrName)
+	if err != nil {
+		return dockerTypes.HijackedResponse{}, err
+	}
+
+	containerInfo, err := c.cli.ContainerInspect(ctx, fullID)
+	if err != nil {
+		return dockerTypes.HijackedResponse{}, err
+	}
+	if !containerInfo.State.Running {
+		return dockerTypes.HijackedResponse{}, fmt.Errorf("container is not running")
+	}
+
+	execConfig := dockerTypes.ExecConfig{
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty:          true,
+		Cmd:          cmd,
+	}
+
+	execCreateResponse, err := c.cli.ContainerExecCreate(ctx, fullID, execConfig)
+	if err != nil {
+		return dockerTypes.HijackedResponse{}, err
+	}
+
+	attachConfig := dockerTypes.ExecStartCheck{
+		Tty: true,
+	}
+	resp, err := c.cli.ContainerExecAttach(ctx, execCreateResponse.ID, attachConfig)
+	if err != nil {
+		return dockerTypes.HijackedResponse{}, err
+	}
+
+	err = c.cli.ContainerExecStart(ctx, execCreateResponse.ID, dockerTypes.ExecStartCheck{Tty: true})
+	if err != nil {
+		resp.Close()
+		return dockerTypes.HijackedResponse{}, err
+	}
+
+	return resp, nil
 }

@@ -7,9 +7,17 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/opswatch/agent/internal/docker"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all origins for the agent proxying
+	},
+}
 
 // Server represents the API server for the agent
 type Server struct {
@@ -41,6 +49,11 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 
 	containerID := pathParts[2]
 	endpoint := pathParts[3]
+
+	if endpoint == "terminal" {
+		s.handleTerminal(w, r, containerID)
+		return
+	}
 
 	if endpoint != "logs" {
 		http.NotFound(w, r)
@@ -124,4 +137,86 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request, containerID string) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// Use a smart shell command that tries bash and falls back to sh
+	// We use /bin/sh to run a small script that checks for /bin/bash
+	cmd := []string{"/bin/sh", "-c", "if [ -x /bin/bash ]; then exec /bin/bash; else exec /bin/sh; fi"}
+	resp, err := s.dockerClient.ExecTerminal(r.Context(), containerID, cmd)
+	if err != nil {
+		log.Printf("Failed to create exec: %v", err)
+		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Failed to start terminal: %v\r\n", err)))
+		return
+	}
+	defer resp.Close()
+
+	// Session timeout and activity tracking
+	timeout := 15 * time.Minute
+	activity := make(chan struct{}, 1)
+	
+	// Copy from WebSocket to Docker Stdin
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			resp.Conn.Write(msg)
+			
+			// Update activity
+			select {
+			case activity <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	// Copy from Docker Stdout to WebSocket
+	go func() {
+		buf := make([]byte, 8192)
+		for {
+			n, err := resp.Reader.Read(buf)
+			if n > 0 {
+				err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+				if err != nil {
+					return
+				}
+				
+				// Update activity
+				select {
+				case activity <- struct{}{}:
+				default:
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Inactivity monitor
+	timer := time.NewTimer(timeout)
+	for {
+		select {
+		case <-activity:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			log.Printf("Terminal session for %s timed out due to inactivity", containerID)
+			conn.WriteMessage(websocket.TextMessage, []byte("\r\nSession timed out due to inactivity.\r\n"))
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
 }

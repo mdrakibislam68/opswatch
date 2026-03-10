@@ -162,6 +162,14 @@ export default function ContainerLogsPage() {
           <h1 className="text-lg font-bold text-white font-mono">{containerName}</h1>
           <p className="text-xs text-slate-500">{lines.length} lines loaded</p>
         </div>
+        <button
+          onClick={() => router.push(`/containers/${dockerId}/terminal`)}
+          className="btn-ghost py-1.5 px-3 text-xs gap-1.5 text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 rounded-lg ml-2"
+          title="Open terminal"
+        >
+          <Terminal size={13} />
+          Terminal
+        </button>
         <div className="ml-auto flex items-center gap-2 flex-wrap">
           {/* Tail selector */}
           <select

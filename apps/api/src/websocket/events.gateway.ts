@@ -59,4 +59,9 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(`server:${serverId}`).emit('metrics:live', metrics);
     this.server.emit('metrics:live', { serverId, ...metrics });
   }
+
+  emitDomainsUpdate(serverId: string, domains: any[]) {
+    this.server.emit(`domains:update:${serverId}`, domains);
+    this.server.emit('domains:update', { serverId, domains });
+  }
 }

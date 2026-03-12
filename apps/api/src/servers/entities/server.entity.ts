@@ -3,6 +3,7 @@ import {
 } from 'typeorm';
 import { Metric } from '../../metrics/entities/metric.entity';
 import { Container } from '../../containers/entities/container.entity';
+import { Domain } from '../../domains/entities/domain.entity';
 
 @Entity('servers')
 export class Server {
@@ -65,6 +66,9 @@ export class Server {
 
   @OneToMany(() => Container, (container) => container.server)
   containers: Container[];
+
+  @OneToMany(() => Domain, (domain) => domain.server)
+  domains: Domain[];
 
   @CreateDateColumn()
   createdAt: Date;

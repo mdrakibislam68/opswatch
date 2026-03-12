@@ -73,6 +73,20 @@ export const alertsApi = {
   events: (limit = 50) => api.get(`/alerts/events?limit=${limit}`).then((r) => r.data),
 };
 
+// ─── Domains ──────────────────────────────────────────────────────────────────
+export const domainsApi = {
+  list: (filters?: { serverId?: string; containerName?: string; port?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.serverId) params.set('serverId', filters.serverId);
+    if (filters?.containerName) params.set('containerName', filters.containerName);
+    if (filters?.port) params.set('port', filters.port);
+    const qs = params.toString();
+    return api.get(`/domains${qs ? `?${qs}` : ''}`).then((r) => r.data);
+  },
+  get: (id: string) => api.get(`/domains/${id}`).then((r) => r.data),
+  stats: () => api.get('/domains/stats').then((r) => r.data),
+};
+
 // ─── Uptime ───────────────────────────────────────────────────────────────────
 export const uptimeApi = {
   list: () => api.get('/uptime').then((r) => r.data),

@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutDashboard, Server, Box, Activity, Bell, Settings,
+  LayoutDashboard, Server, Box, Globe, Activity, Bell, Settings,
   LogOut, Zap, Shield, ChevronRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -12,6 +12,7 @@ const navItems = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
   { href: '/servers', label: 'Servers', icon: Server },
   { href: '/containers', label: 'Containers', icon: Box },
+  { href: '/domains', label: 'Domains', icon: Globe },
   { href: '/uptime', label: 'Uptime', icon: Activity },
   { href: '/alerts', label: 'Alerts', icon: Bell },
   { href: '/settings', label: 'Settings', icon: Settings },

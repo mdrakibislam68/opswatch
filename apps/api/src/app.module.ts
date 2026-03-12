@@ -8,6 +8,7 @@ import { UsersModule } from './users/users.module';
 import { ServersModule } from './servers/servers.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ContainersModule } from './containers/containers.module';
+import { DomainsModule } from './domains/domains.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { UptimeModule } from './uptime/uptime.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -52,6 +53,7 @@ import { HealthController } from './common/health.controller';
     ServersModule,
     MetricsModule,
     ContainersModule,
+    DomainsModule,
     AlertsModule,
     UptimeModule,
     NotificationsModule,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/opswatch/agent/internal/collectors"
 	"github.com/opswatch/agent/internal/docker"
+	"github.com/opswatch/agent/internal/nginx"
 )
 
 type Sender struct {
@@ -34,6 +35,11 @@ func (s *Sender) SendMetrics(metrics *collectors.SystemMetrics) error {
 func (s *Sender) SyncContainers(containers []docker.ContainerInfo) error {
 	payload := map[string]interface{}{"containers": containers}
 	return s.post("/containers/sync", payload)
+}
+
+func (s *Sender) SyncDomains(domains []nginx.DomainInfo) error {
+	payload := map[string]interface{}{"domains": domains}
+	return s.post("/domains/sync", payload)
 }
 
 func (s *Sender) post(path string, data interface{}) error {

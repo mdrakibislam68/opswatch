@@ -10,6 +10,7 @@ import (
 	"github.com/opswatch/agent/internal/api"
 	"github.com/opswatch/agent/internal/collectors"
 	"github.com/opswatch/agent/internal/docker"
+	"github.com/opswatch/agent/internal/nginx"
 	"github.com/opswatch/agent/internal/sender"
 )
 
@@ -31,8 +32,16 @@ func main() {
 	s := sender.New(apiURL, apiKey)
 	dockerClient := docker.New()
 
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
+	metricsTicker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer metricsTicker.Stop()
+
+	domainIntervalStr := getEnv("OPSWATCH_DOMAIN_INTERVAL", "60")
+	domainInterval, _ := strconv.Atoi(domainIntervalStr)
+	if domainInterval < 10 {
+		domainInterval = 60
+	}
+	domainTicker := time.NewTicker(time.Duration(domainInterval) * time.Second)
+	defer domainTicker.Stop()
 
 	// Start Agent API Server
 	agentPort := getEnv("OPSWATCH_AGENT_PORT", "4001")
@@ -43,8 +52,22 @@ func main() {
 		}
 	}()
 
+	// Domain scan goroutine on its own ticker
+	go func() {
+		for range domainTicker.C {
+			domains := nginx.ScanDomains(dockerClient)
+			if len(domains) > 0 {
+				if err := s.SyncDomains(domains); err != nil {
+					log.Printf("Failed to sync domains: %v", err)
+				} else {
+					log.Printf("Synced %d domain(s)", len(domains))
+				}
+			}
+		}
+	}()
+
 	for {
-		<-ticker.C
+		<-metricsTicker.C
 
 		// Collect system metrics
 		sysMetrics, err := collectors.CollectSystem()

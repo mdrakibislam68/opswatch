@@ -87,6 +87,7 @@ if ! wget -qO "${INSTALL_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL" 2>/dev/null; then
     echo -e "  -e OPSWATCH_API_URL=${OPSWATCH_API_URL} \\"
     echo -e "  -e OPSWATCH_API_KEY=${OPSWATCH_API_KEY} \\"
     echo -e "  -v /var/run/docker.sock:/var/run/docker.sock \\"
+    echo -e "  -v /etc/nginx:/etc/nginx:ro \\"
     echo -e "  opswatch/agent:latest${NC}\n"
     exit 0
   else

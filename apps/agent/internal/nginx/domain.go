@@ -48,6 +48,7 @@ func ScanDomains(dockerClient *docker.Client) []DomainInfo {
 		isSitesEnabled := strings.Contains(block.ConfigFile, "sites-enabled")
 
 		for _, name := range block.ServerNames {
+			log.Printf("Found domain: %s (port: %d, container: %s)", name, port, containerName)
 			existing, alreadySeen := seen[name]
 			// Only overwrite if this is the first time, or if this
 			// entry comes from sites-enabled (higher priority).

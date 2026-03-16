@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/opswatch/agent/internal/docker"
+	"github.com/opswatch/agent/internal/nginx"
 )
 
 var upgrader = websocket.Upgrader{
@@ -34,6 +35,7 @@ func (s *Server) Start(port string) error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/containers/", s.handleContainers)
+	mux.HandleFunc("/api/domains", s.handleDomains)
 
 	log.Printf("Agent API server starting on port %s", port)
 	return http.ListenAndServe(":"+port, mux)
@@ -218,5 +220,22 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request, containe
 		case <-r.Context().Done():
 			return
 		}
+	}
+}
+
+func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Handling /api/domains request...")
+	domains := nginx.ScanDomains(s.dockerClient)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(domains); err != nil {
+		log.Printf("Error encoding domains: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 }

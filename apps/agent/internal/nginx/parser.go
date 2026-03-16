@@ -3,6 +3,7 @@ package nginx
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -185,6 +186,7 @@ func ScanNginxConfigs() ([]serverBlock, map[string]upstreamBlock) {
 		"/etc/nginx/nginx.conf",
 		"/etc/nginx/sites-enabled",
 		"/etc/nginx/sites-available",
+		"/etc/nginx/conf.d",
 	}
 
 	visited := make(map[string]bool)
@@ -192,23 +194,28 @@ func ScanNginxConfigs() ([]serverBlock, map[string]upstreamBlock) {
 	allUpstreams := make(map[string]upstreamBlock)
 
 	for _, p := range configPaths {
+		log.Printf("Scanning nginx config path: %s", p)
 		info, err := os.Stat(p)
 		if err != nil {
+			log.Printf("Path not found: %s", p)
 			continue
 		}
 
 		if info.IsDir() {
 			entries, err := os.ReadDir(p)
 			if err != nil {
+				log.Printf("Error reading directory %s: %v", p, err)
 				continue
 			}
 			for _, entry := range entries {
-				if entry.IsDir() {
+				if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".conf") && entry.Name() != "nginx.conf") {
 					continue
 				}
 				filePath := filepath.Join(p, entry.Name())
+				log.Printf("Parsing config file: %s", filePath)
 				blocks, upstreams, err := parseConfigFile(filePath, visited)
 				if err != nil {
+					log.Printf("Error parsing %s: %v", filePath, err)
 					continue
 				}
 				allBlocks = append(allBlocks, blocks...)
@@ -217,8 +224,10 @@ func ScanNginxConfigs() ([]serverBlock, map[string]upstreamBlock) {
 				}
 			}
 		} else {
+			log.Printf("Parsing config file: %s", p)
 			blocks, upstreams, err := parseConfigFile(p, visited)
 			if err != nil {
+				log.Printf("Error parsing %s: %v", p, err)
 				continue
 			}
 			allBlocks = append(allBlocks, blocks...)
@@ -228,6 +237,7 @@ func ScanNginxConfigs() ([]serverBlock, map[string]upstreamBlock) {
 		}
 	}
 
+	log.Printf("Discovered %d server blocks and %d upstreams", len(allBlocks), len(allUpstreams))
 	return allBlocks, allUpstreams
 }
 

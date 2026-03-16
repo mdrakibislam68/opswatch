@@ -53,6 +53,7 @@ export const serversApi = {
     sshPort: number;
     privateKey: string;
     passphrase?: string;
+    installPath?: string;
     apiUrl?: string;
   }) => api.post('/servers/add-ssh', data).then((r) => r.data),
 
@@ -63,6 +64,7 @@ export const serversApi = {
     sshUser: string;
     sshPort: number;
     passphrase?: string;
+    installPath?: string;
     apiUrl?: string;
     pemFile: File;
   }) => {
@@ -73,6 +75,7 @@ export const serversApi = {
     form.append('sshUser', data.sshUser);
     form.append('sshPort', String(data.sshPort));
     if (data.passphrase) form.append('passphrase', data.passphrase);
+    if (data.installPath) form.append('installPath', data.installPath);
     if (data.apiUrl) form.append('apiUrl', data.apiUrl);
     form.append('pemFile', data.pemFile);
     return api.post('/servers/add-aws', form, {

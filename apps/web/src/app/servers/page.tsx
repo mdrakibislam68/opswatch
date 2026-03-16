@@ -31,6 +31,7 @@ interface SshForm {
   sshPort: string;
   privateKey: string;
   passphrase: string;
+  installPath: string;
   apiUrl: string;
 }
 
@@ -40,9 +41,15 @@ interface AwsForm {
   sshUser: string;
   sshPort: string;
   passphrase: string;
+  installPath: string;
   apiUrl: string;
   pemFile: File | null;
 }
+
+// Returns the default agent install path based on the SSH user.
+// root → system-wide /opt/opswatch; others → home directory path.
+const defaultInstallPath = (user: string): string =>
+  user === 'root' ? '/opt/opswatch' : `/home/${user || 'ubuntu'}/opswatch`;
 
 interface ScriptForm {
   name: string;
@@ -129,6 +136,7 @@ export default function ServersPage() {
     sshPort: '22',
     privateKey: '',
     passphrase: '',
+    installPath: defaultInstallPath('root'),
     apiUrl: '',
   });
   const [awsForm, setAwsForm] = useState<AwsForm>({
@@ -137,9 +145,14 @@ export default function ServersPage() {
     sshUser: 'ubuntu',
     sshPort: '22',
     passphrase: '',
+    installPath: defaultInstallPath('ubuntu'),
     apiUrl: '',
     pemFile: null,
   });
+
+  // Track whether the user has manually edited installPath — if so, stop auto-updating it.
+  const sshPathTouched = useRef(false);
+  const awsPathTouched = useRef(false);
 
   const pemInputRef = useRef<HTMLInputElement>(null);
 
@@ -166,6 +179,19 @@ export default function ServersPage() {
     };
   }, []);
 
+  // Auto-suggest install path when SSH user changes (unless manually overridden)
+  useEffect(() => {
+    if (!sshPathTouched.current) {
+      setSshForm((f) => ({ ...f, installPath: defaultInstallPath(f.sshUser) }));
+    }
+  }, [sshForm.sshUser]);
+
+  useEffect(() => {
+    if (!awsPathTouched.current) {
+      setAwsForm((f) => ({ ...f, installPath: defaultInstallPath(f.sshUser) }));
+    }
+  }, [awsForm.sshUser]);
+
   // ─── Modal helpers ─────────────────────────────────────────────────────────
 
   const resetModal = () => {
@@ -174,8 +200,10 @@ export default function ServersPage() {
     setInstallResult(null);
     setShowLog(false);
     setScriptForm({ name: '', hostname: '' });
-    setSshForm({ name: '', hostname: '', sshUser: 'root', sshPort: '22', privateKey: '', passphrase: '', apiUrl: '' });
-    setAwsForm({ name: '', hostname: '', sshUser: 'ubuntu', sshPort: '22', passphrase: '', apiUrl: '', pemFile: null });
+    setSshForm({ name: '', hostname: '', sshUser: 'root', sshPort: '22', privateKey: '', passphrase: '', installPath: defaultInstallPath('root'), apiUrl: '' });
+    setAwsForm({ name: '', hostname: '', sshUser: 'ubuntu', sshPort: '22', passphrase: '', installPath: defaultInstallPath('ubuntu'), apiUrl: '', pemFile: null });
+    sshPathTouched.current = false;
+    awsPathTouched.current = false;
   };
 
   const closeModal = () => {
@@ -213,6 +241,7 @@ export default function ServersPage() {
         sshPort: Number(sshForm.sshPort) || 22,
         privateKey: sshForm.privateKey,
         passphrase: sshForm.passphrase || undefined,
+        installPath: sshForm.installPath || undefined,
         apiUrl: sshForm.apiUrl || undefined,
       });
       setInstallResult({
@@ -248,6 +277,7 @@ export default function ServersPage() {
         sshUser: awsForm.sshUser,
         sshPort: Number(awsForm.sshPort) || 22,
         passphrase: awsForm.passphrase || undefined,
+        installPath: awsForm.installPath || undefined,
         apiUrl: awsForm.apiUrl || undefined,
         pemFile: awsForm.pemFile,
       });
@@ -484,6 +514,26 @@ export default function ServersPage() {
                       value={sshForm.passphrase}
                       onChange={(v) => setSshForm((f) => ({ ...f, passphrase: v }))}
                     />
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 flex items-center justify-between">
+                        <span>Agent Install Path</span>
+                        <span className="text-[10px] text-slate-600">
+                          auto-set from SSH user
+                        </span>
+                      </label>
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder="/home/ubuntu/opswatch"
+                        value={sshForm.installPath}
+                        onChange={(e) => {
+                          sshPathTouched.current = true;
+                          setSshForm((f) => ({ ...f, installPath: e.target.value }));
+                        }}
+                      />
+                      <p className="text-[10px] text-slate-600 mt-1">
+                        Use a home-directory path (e.g. <code className="text-slate-500">/home/ubuntu/opswatch</code>) when the SSH user is not root.
+                      </p>
+                    </div>
                     <Field label="OpsWatch API URL (optional)" placeholder="http://your-opswatch-server:4000/api/v1"
                       value={sshForm.apiUrl}
                       onChange={(v) => setSshForm((f) => ({ ...f, apiUrl: v }))} />
@@ -543,6 +593,26 @@ export default function ServersPage() {
                       value={awsForm.passphrase}
                       onChange={(v) => setAwsForm((f) => ({ ...f, passphrase: v }))}
                     />
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 flex items-center justify-between">
+                        <span>Agent Install Path</span>
+                        <span className="text-[10px] text-slate-600">
+                          auto-set from SSH user
+                        </span>
+                      </label>
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder="/home/ubuntu/opswatch"
+                        value={awsForm.installPath}
+                        onChange={(e) => {
+                          awsPathTouched.current = true;
+                          setAwsForm((f) => ({ ...f, installPath: e.target.value }));
+                        }}
+                      />
+                      <p className="text-[10px] text-slate-600 mt-1">
+                        EC2 instances default to <code className="text-slate-500">/home/ubuntu/opswatch</code> — change if using a different AMI user.
+                      </p>
+                    </div>
                     <Field label="OpsWatch API URL (optional)" placeholder="http://your-opswatch-server:4000/api/v1"
                       value={awsForm.apiUrl}
                       onChange={(v) => setAwsForm((f) => ({ ...f, apiUrl: v }))} />

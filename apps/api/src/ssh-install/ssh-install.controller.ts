@@ -77,6 +77,7 @@ export class SshInstallController {
       sshUser: body.sshUser,
       sshPort: body.sshPort ? Number(body.sshPort) : 22,
       passphrase: body.passphrase,
+      installPath: body.installPath,
       apiUrl: body.apiUrl,
     };
 

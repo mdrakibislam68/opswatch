@@ -36,5 +36,9 @@ export class AddSshDto {
 
   @IsOptional()
   @IsString()
+  installPath?: string;
+
+  @IsOptional()
+  @IsString()
   apiUrl?: string;
 }

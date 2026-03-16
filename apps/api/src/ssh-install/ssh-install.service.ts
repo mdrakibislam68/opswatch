@@ -22,6 +22,33 @@ export class SshInstallService {
     private readonly configService: ConfigService,
   ) {}
 
+  // ─── Install path resolution ───────────────────────────────────────────────
+  //
+  // Rules (applied in order):
+  //   1. If the caller supplied an explicit installPath → validate and use it.
+  //   2. If the SSH user is "root" → /opt/opswatch  (standard system path)
+  //   3. Otherwise → /home/{sshUser}/opswatch  (safe for ubuntu, ec2-user, etc.)
+
+  private resolveInstallPath(sshUser: string, customPath?: string): string {
+    if (customPath?.trim()) {
+      const p = customPath.trim();
+      if (!p.startsWith('/')) {
+        throw new BadRequestException(
+          'Install path must be an absolute path starting with /',
+        );
+      }
+      if (p.includes('..')) {
+        throw new BadRequestException('Install path must not contain ".."');
+      }
+      if (p.length > 200) {
+        throw new BadRequestException('Install path is too long');
+      }
+      return p.replace(/\/+$/, ''); // strip trailing slashes
+    }
+
+    return sshUser === 'root' ? '/opt/opswatch' : `/home/${sshUser}/opswatch`;
+  }
+
   // ─── Key normalization ─────────────────────────────────────────────────────
   // Private keys pasted in a browser textarea or sent via JSON can arrive with:
   //   • literal  \n  (backslash-n text) instead of real newline characters
@@ -32,19 +59,11 @@ export class SshInstallService {
   private normalizePrivateKey(raw: string): Buffer {
     let key = raw.trim();
 
-    // Replace literal backslash-n sequences (common when JSON round-trips go wrong
-    // or the user copies from a config that stored it as a single-line string).
     if (key.includes('\\n')) {
       key = key.replace(/\\n/g, '\n');
     }
-
-    // Normalize Windows line endings
     key = key.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-    // Ensure there is exactly one trailing newline after the closing footer
-    if (!key.endsWith('\n')) {
-      key += '\n';
-    }
+    if (!key.endsWith('\n')) key += '\n';
 
     return Buffer.from(key, 'utf-8');
   }
@@ -68,8 +87,6 @@ export class SshInstallService {
 
       conn.on('ready', () => {
         this.logger.debug(`SSH handshake complete for ${config.host}`);
-        // Pipe the entire install script to a remote bash process via stdin.
-        // This avoids any need for SFTP and sidesteps shell-escaping complexity.
         conn.exec('bash -s', (err, stream) => {
           if (err) {
             clearTimeout(timeout);
@@ -100,12 +117,12 @@ export class SshInstallService {
         this.logger.error(`SSH error [level=${err.level ?? 'unknown'}]: ${err.message}`);
         this.logger.debug(`SSH debug log:\n${debugLog}`);
 
-        // Translate ssh2 error levels into user-friendly messages
         let userMessage = err.message;
         if (err.level === 'client-authentication') {
           userMessage =
-            'Authentication failed — verify that the private key matches an entry in ~/.ssh/authorized_keys on the remote server, ' +
-            'and that the correct SSH user was specified. If the key is passphrase-protected, provide the passphrase.';
+            'Authentication failed — verify that the private key matches an entry in ' +
+            '~/.ssh/authorized_keys on the remote server, and that the correct SSH user ' +
+            'was specified. If the key is passphrase-protected, provide the passphrase.';
         } else if (err.level === 'client-socket') {
           userMessage = `Cannot reach ${config.host}:${config.port} — check the host/IP and that port ${config.port} is open.`;
         } else if (err.level === 'client-timeout') {
@@ -115,7 +132,6 @@ export class SshInstallService {
         reject(new Error(userMessage));
       });
 
-      // Capture detailed ssh2 debug output — available in development or when LOG_LEVEL=debug
       conn.on('banner', (msg) => {
         this.logger.debug(`[SSH banner] ${msg}`);
       });
@@ -124,7 +140,6 @@ export class SshInstallService {
         ...config,
         debug: (msg: string) => {
           debugLog += msg + '\n';
-          // Log key negotiation lines at debug level to help diagnose failures
           if (
             msg.includes('Handshake') ||
             msg.includes('KEX') ||
@@ -140,22 +155,36 @@ export class SshInstallService {
     });
   }
 
-  // ─── Install script builder ────────────────────────────────────────────────
+  // ─── URL helpers ───────────────────────────────────────────────────────────
 
-  // Derive the base URL (scheme+host+port) from the configured API URL.
-  // e.g. "http://89.116.191.92:4000/api/v1"  → "http://89.116.191.92:4000"
   private apiBaseUrl(apiUrl: string): string {
     try {
       const u = new URL(apiUrl);
       return `${u.protocol}//${u.host}`;
     } catch {
-      // Fallback: strip trailing path segments
       return apiUrl.replace(/\/api\/v1\/?$/, '');
     }
   }
 
-  private buildInstallScript(apiKey: string, apiUrl: string): string {
-    // Use base64 to safely embed file contents — avoids all shell-escaping issues.
+  // ─── Install script builder ────────────────────────────────────────────────
+  //
+  // All paths come from the resolved installPath so the agent can be placed
+  // in /home/{user}/opswatch when the SSH user is not root.
+  //
+  // Privilege handling:
+  //   - File operations under installPath: no sudo needed (user owns the dir)
+  //   - /opt/... paths: automatically uses sudo if available
+  //   - systemd service management: always runs through $PRIV (sudo or "")
+
+  private buildInstallScript(
+    apiKey: string,
+    apiUrl: string,
+    sshUser: string,
+    installPath: string,
+  ): string {
+    const apiBase = this.apiBaseUrl(apiUrl);
+
+    // Build file contents as base64 to safely embed them — no shell-escaping needed.
     const envContent = Buffer.from(
       [
         `OPSWATCH_API_URL=${apiUrl}`,
@@ -167,6 +196,7 @@ export class SshInstallService {
       ].join('\n'),
     ).toString('base64');
 
+    // Service unit uses the resolved paths and the actual SSH user.
     const serviceContent = Buffer.from(
       [
         '[Unit]',
@@ -177,10 +207,10 @@ export class SshInstallService {
         '',
         '[Service]',
         'Type=simple',
-        'User=root',
-        'WorkingDirectory=/opt/opswatch',
-        'EnvironmentFile=/opt/opswatch/.env',
-        'ExecStart=/opt/opswatch/opswatch-agent',
+        `User=${sshUser}`,
+        `WorkingDirectory=${installPath}`,
+        `EnvironmentFile=${installPath}/.env`,
+        `ExecStart=${installPath}/opswatch-agent`,
         'Restart=always',
         'RestartSec=10',
         'StandardOutput=journal',
@@ -188,7 +218,7 @@ export class SshInstallService {
         'SyslogIdentifier=opswatch-agent',
         'NoNewPrivileges=true',
         'ProtectSystem=strict',
-        'ReadWritePaths=/opt/opswatch',
+        `ReadWritePaths=${installPath}`,
         'SupplementaryGroups=docker',
         '',
         '[Install]',
@@ -197,23 +227,45 @@ export class SshInstallService {
       ].join('\n'),
     ).toString('base64');
 
-    const apiBase = this.apiBaseUrl(apiUrl);
-
-    // Bash variables are escaped as \$VAR / \${VAR} to prevent TypeScript
-    // template-literal interpolation while still expanding correctly in bash.
+    // Bash variables use \$VAR / \${VAR} to avoid TypeScript template interpolation.
     return `#!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR="/opt/opswatch"
+INSTALL_DIR="${installPath}"
 SERVICE_NAME="opswatch-agent"
 BINARY_NAME="opswatch-agent"
 
-echo "[OpsWatch] Starting agent installation..."
+echo "[OpsWatch] Install path: \$INSTALL_DIR"
+echo "[OpsWatch] Running as user: \$(whoami)"
+
+# ── Privilege escalation helper ───────────────────────────────────────────────
+# systemd and /etc/systemd writes always need root.  File operations inside
+# INSTALL_DIR generally don't (the user owns that directory).
+PRIV=""
+if [ "\$(id -u)" != "0" ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    PRIV="sudo"
+    echo "[OpsWatch] Will use sudo for privileged operations"
+  else
+    echo "[OpsWatch] WARNING: Not root and sudo not found. systemd steps may fail."
+  fi
+fi
 
 # ── Create install directory ──────────────────────────────────────────────────
-mkdir -p "\$INSTALL_DIR"
+if ! mkdir -p "\$INSTALL_DIR" 2>/dev/null; then
+  echo "[OpsWatch] Cannot create \$INSTALL_DIR as \$(whoami) — trying with sudo..."
+  if command -v sudo >/dev/null 2>&1; then
+    sudo mkdir -p "\$INSTALL_DIR"
+    sudo chown "\$(id -u):\$(id -g)" "\$INSTALL_DIR"
+  else
+    echo "[OpsWatch] ERROR: Cannot create \$INSTALL_DIR and sudo is unavailable."
+    echo "[OpsWatch] Tip: set Install Path to a directory you own, e.g. /home/\$(whoami)/opswatch"
+    exit 1
+  fi
+fi
+echo "[OpsWatch] Install directory ready: \$INSTALL_DIR"
 
-# ── Detect architecture ───────────────────────────────────────────────────────
+# ── Detect OS and architecture ────────────────────────────────────────────────
 ARCH="\$(uname -m)"
 case "\$ARCH" in
   x86_64)  ARCH="amd64" ;;
@@ -226,8 +278,8 @@ OS="\$(uname -s | tr '[:upper:]' '[:lower:]')"
 echo "[OpsWatch] Detected: \${OS}/\${ARCH}"
 
 # ── Download agent binary ─────────────────────────────────────────────────────
-# Primary:  OpsWatch API server (always available — binary is bundled in the image)
-# Fallback: GitHub releases (for future public releases)
+# Primary:  OpsWatch server (binary is bundled in the Docker image)
+# Fallback: GitHub releases
 OPSWATCH_BASE="${apiBase}"
 PRIMARY_URL="\${OPSWATCH_BASE}/api/v1/downloads/opswatch-agent-\${OS}-\${ARCH}"
 FALLBACK_URL="https://github.com/opswatch/agent/releases/latest/download/opswatch-agent-\${OS}-\${ARCH}"
@@ -248,36 +300,39 @@ if download_binary "\$PRIMARY_URL"; then
 elif download_binary "\$FALLBACK_URL"; then
   echo "[OpsWatch] Downloaded from GitHub releases"
 else
-  echo "[OpsWatch] All download sources failed. Neither wget nor curl is available, or URLs are unreachable."
+  echo "[OpsWatch] ERROR: All download sources failed."
   exit 1
 fi
 
 chmod +x "\$INSTALL_DIR/\$BINARY_NAME"
-echo "[OpsWatch] Binary installed at \$INSTALL_DIR/\$BINARY_NAME"
+echo "[OpsWatch] Binary installed: \$INSTALL_DIR/\$BINARY_NAME"
 
 # ── Write environment config ──────────────────────────────────────────────────
 echo "${envContent}" | base64 -d > "\$INSTALL_DIR/.env"
 chmod 600 "\$INSTALL_DIR/.env"
-echo "[OpsWatch] Config written to \$INSTALL_DIR/.env"
+echo "[OpsWatch] Config written: \$INSTALL_DIR/.env"
 
 # ── Write systemd service unit ────────────────────────────────────────────────
-echo "${serviceContent}" | base64 -d > "/etc/systemd/system/\$SERVICE_NAME.service"
+# tee is used so that \$PRIV (sudo) applies to the write, not just the echo.
+echo "${serviceContent}" | base64 -d | \$PRIV tee "/etc/systemd/system/\$SERVICE_NAME.service" > /dev/null
+\$PRIV chmod 644 "/etc/systemd/system/\$SERVICE_NAME.service"
 echo "[OpsWatch] Systemd service created"
 
 # ── Enable and start service ──────────────────────────────────────────────────
-systemctl daemon-reload
-systemctl enable "\$SERVICE_NAME" >/dev/null 2>&1
-systemctl restart "\$SERVICE_NAME"
+\$PRIV systemctl daemon-reload
+\$PRIV systemctl enable "\$SERVICE_NAME" >/dev/null 2>&1
+\$PRIV systemctl restart "\$SERVICE_NAME"
 
 sleep 2
-if systemctl is-active --quiet "\$SERVICE_NAME"; then
+if \$PRIV systemctl is-active --quiet "\$SERVICE_NAME"; then
   echo "[OpsWatch] Agent is running!"
 else
-  echo "[OpsWatch] Warning: agent may have failed to start. Check: journalctl -u \$SERVICE_NAME -n 50"
+  echo "[OpsWatch] Warning: agent may have failed to start."
+  echo "[OpsWatch] Check logs: journalctl -u \$SERVICE_NAME -n 50"
   exit 1
 fi
 
-echo "[OpsWatch] Installation complete"
+echo "[OpsWatch] Installation complete — path: \$INSTALL_DIR"
 `;
   }
 
@@ -304,6 +359,7 @@ echo "[OpsWatch] Installation complete"
     sshPort: number;
     privateKey: string;
     passphrase?: string;
+    installPath?: string;
     apiUrl?: string;
     connectionType: 'ssh' | 'aws-pem';
   }) {
@@ -315,11 +371,15 @@ echo "[OpsWatch] Installation complete"
       this.configService.get<string>('OPSWATCH_API_URL') ||
       'http://localhost:4000/api/v1';
 
-    // Normalize the private key before handing it to ssh2.
-    // Corrupted newlines are the #1 cause of "All configured authentication methods failed".
+    // Resolve the install path: custom → root default → user home default
+    const installPath = this.resolveInstallPath(sshUser, params.installPath);
+
+    this.logger.log(
+      `Install path resolved to: "${installPath}" for user "${sshUser}"`,
+    );
+
     const privateKey = this.normalizePrivateKey(params.privateKey);
 
-    // 1. Register the server — generates the apiKey the agent will use
     const server = await this.serversService.create({ name, hostname, connectionType });
     this.logger.log(
       `Registered server "${name}" (${server.id}), starting SSH install on ${host}:${sshPort}`,
@@ -332,14 +392,17 @@ echo "[OpsWatch] Installation complete"
       privateKey,
       ...(params.passphrase ? { passphrase: params.passphrase } : {}),
       readyTimeout: SSH_READY_TIMEOUT_MS,
-      // Accept any host key (equivalent to StrictHostKeyChecking=no).
-      // We use the explicit callback form for full ssh2 v1.x compatibility.
       hostVerifier: (_keyHash, callback) => {
         callback(true);
       },
     };
 
-    const script = this.buildInstallScript(server.apiKey, resolvedApiUrl);
+    const script = this.buildInstallScript(
+      server.apiKey,
+      resolvedApiUrl,
+      sshUser,
+      installPath,
+    );
 
     try {
       const result = await this.runScript(connectConfig, script);
@@ -352,11 +415,12 @@ echo "[OpsWatch] Installation complete"
         );
       }
 
-      this.logger.log(`Agent successfully installed on ${host} for server ${server.id}`);
+      this.logger.log(`Agent installed on ${host} at ${installPath} (server ${server.id})`);
       return {
         server,
         installLog: result.stdout,
-        message: 'Agent installed and started successfully',
+        installPath,
+        message: `Agent installed and started — path: ${installPath}`,
       };
     } catch (err) {
       if (err instanceof InternalServerErrorException) throw err;
@@ -380,6 +444,7 @@ echo "[OpsWatch] Installation complete"
       sshPort: dto.sshPort ?? 22,
       privateKey: dto.privateKey,
       passphrase: dto.passphrase,
+      installPath: dto.installPath,
       apiUrl: dto.apiUrl,
       connectionType: 'ssh',
     });
@@ -395,6 +460,7 @@ echo "[OpsWatch] Installation complete"
       sshPort: dto.sshPort ?? 22,
       privateKey,
       passphrase: dto.passphrase,
+      installPath: dto.installPath,
       apiUrl: dto.apiUrl,
       connectionType: 'aws-pem',
     });

@@ -31,5 +31,9 @@ export class AddAwsDto {
 
   @IsOptional()
   @IsString()
+  installPath?: string;
+
+  @IsOptional()
+  @IsString()
   apiUrl?: string;
 }

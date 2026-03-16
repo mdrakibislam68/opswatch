@@ -44,6 +44,42 @@ export const serversApi = {
   update: (id: string, data: any) => api.put(`/servers/${id}`, data).then((r) => r.data),
   delete: (id: string) => api.delete(`/servers/${id}`).then((r) => r.data),
   stats: () => api.get('/servers/stats').then((r) => r.data),
+
+  addViaSsh: (data: {
+    name: string;
+    hostname: string;
+    host: string;
+    sshUser: string;
+    sshPort: number;
+    privateKey: string;
+    passphrase?: string;
+    apiUrl?: string;
+  }) => api.post('/servers/add-ssh', data).then((r) => r.data),
+
+  addViaAwsPem: (data: {
+    name: string;
+    hostname: string;
+    host: string;
+    sshUser: string;
+    sshPort: number;
+    passphrase?: string;
+    apiUrl?: string;
+    pemFile: File;
+  }) => {
+    const form = new FormData();
+    form.append('name', data.name);
+    form.append('hostname', data.hostname);
+    form.append('host', data.host);
+    form.append('sshUser', data.sshUser);
+    form.append('sshPort', String(data.sshPort));
+    if (data.passphrase) form.append('passphrase', data.passphrase);
+    if (data.apiUrl) form.append('apiUrl', data.apiUrl);
+    form.append('pemFile', data.pemFile);
+    return api.post('/servers/add-aws', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180_000, // 3 min — SSH install can take a while
+    }).then((r) => r.data);
+  },
 };
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────

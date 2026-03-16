@@ -47,8 +47,8 @@ services:
   # ─── Backend API ────────────────────────────────────────────────────────────
   api:
     build:
-      context: ./apps/api
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: apps/api/Dockerfile
     container_name: opswatch-api
     restart: unless-stopped
     depends_on:
@@ -90,7 +90,7 @@ services:
   # ─── Frontend ───────────────────────────────────────────────────────────────
   web:
     build:
-      context: ./apps/web
+      context: ../apps/web
       dockerfile: Dockerfile
     container_name: opswatch-web
     restart: unless-stopped
@@ -117,7 +117,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
     networks:
       - opswatch

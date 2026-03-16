@@ -61,6 +61,10 @@ export class Server {
   @Column({ default: true })
   isActive: boolean;
 
+  // 'script' | 'ssh' | 'aws-pem'
+  @Column({ default: 'script', nullable: true })
+  connectionType: string;
+
   @OneToMany(() => Metric, (metric) => metric.server)
   metrics: Metric[];
 

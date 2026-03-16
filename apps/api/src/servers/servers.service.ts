@@ -26,7 +26,7 @@ export class ServersService {
     return this.serverRepo.findOne({ where: { apiKey } });
   }
 
-  async create(data: { name: string; hostname: string }) {
+  async create(data: { name: string; hostname: string; connectionType?: string }) {
     const apiKey = `agent_${uuidv4().replace(/-/g, '')}`;
     const server = this.serverRepo.create({ ...data, apiKey, status: 'offline' });
     return this.serverRepo.save(server);

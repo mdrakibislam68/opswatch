@@ -13,6 +13,8 @@ import { AlertsModule } from './alerts/alerts.module';
 import { UptimeModule } from './uptime/uptime.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { WebsocketModule } from './websocket/websocket.module';
+import { SshInstallModule } from './ssh-install/ssh-install.module';
+import { DownloadsModule } from './downloads/downloads.module';
 import { HealthController } from './common/health.controller';
 
 @Module({
@@ -58,6 +60,8 @@ import { HealthController } from './common/health.controller';
     UptimeModule,
     NotificationsModule,
     WebsocketModule,
+    SshInstallModule,
+    DownloadsModule,
   ],
   controllers: [HealthController],
 })

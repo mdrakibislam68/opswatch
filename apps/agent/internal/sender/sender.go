@@ -55,6 +55,9 @@ func (s *Sender) post(path string, data interface{}) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-KEY", s.apiKey)
+	// Free ngrok shows an interstitial for some clients; skip it for agent traffic.
+	req.Header.Set("ngrok-skip-browser-warning", "true")
+	req.Header.Set("User-Agent", "opswatch-agent/1.0")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

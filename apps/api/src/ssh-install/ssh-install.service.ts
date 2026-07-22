@@ -3,14 +3,17 @@ import {
   Logger,
   InternalServerErrorException,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Client, ConnectConfig } from 'ssh2';
+import { Client, ConnectConfig, SFTPWrapper } from 'ssh2';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { ServersService } from '../servers/servers.service';
 import { AddSshDto } from './dto/add-ssh.dto';
 import { AddAwsDto } from './dto/add-aws.dto';
 
-const SSH_TIMEOUT_MS = 120_000;
+const SSH_TIMEOUT_MS = 180_000;
 const SSH_READY_TIMEOUT_MS = 30_000;
 
 @Injectable()
@@ -23,11 +26,6 @@ export class SshInstallService {
   ) {}
 
   // ─── Install path resolution ───────────────────────────────────────────────
-  //
-  // Rules (applied in order):
-  //   1. If the caller supplied an explicit installPath → validate and use it.
-  //   2. If the SSH user is "root" → /opt/opswatch  (standard system path)
-  //   3. Otherwise → /home/{sshUser}/opswatch  (safe for ubuntu, ec2-user, etc.)
 
   private resolveInstallPath(sshUser: string, customPath?: string): string {
     if (customPath?.trim()) {
@@ -43,18 +41,13 @@ export class SshInstallService {
       if (p.length > 200) {
         throw new BadRequestException('Install path is too long');
       }
-      return p.replace(/\/+$/, ''); // strip trailing slashes
+      return p.replace(/\/+$/, '');
     }
 
     return sshUser === 'root' ? '/opt/opswatch' : `/home/${sshUser}/opswatch`;
   }
 
   // ─── Key normalization ─────────────────────────────────────────────────────
-  // Private keys pasted in a browser textarea or sent via JSON can arrive with:
-  //   • literal  \n  (backslash-n text) instead of real newline characters
-  //   • Windows  \r\n  line endings
-  //   • leading/trailing whitespace
-  // ssh2 must receive the key with real Unix newlines or it silently fails auth.
 
   private normalizePrivateKey(raw: string): Buffer {
     let key = raw.trim();
@@ -68,48 +61,60 @@ export class SshInstallService {
     return Buffer.from(key, 'utf-8');
   }
 
-  // ─── SSH script execution ──────────────────────────────────────────────────
+  // ─── Private / loopback URL detection ──────────────────────────────────────
 
-  private runScript(
-    config: ConnectConfig,
-    script: string,
-  ): Promise<{ stdout: string; stderr: string; code: number }> {
+  private isUnreachableFromInternet(apiUrl: string): boolean {
+    try {
+      const { hostname } = new URL(apiUrl);
+      if (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '::1' ||
+        hostname.endsWith('.local')
+      ) {
+        return true;
+      }
+      // RFC1918 + link-local
+      if (/^10\./.test(hostname)) return true;
+      if (/^192\.168\./.test(hostname)) return true;
+      if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return true;
+      if (/^169\.254\./.test(hostname)) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // ─── Local agent binary lookup ─────────────────────────────────────────────
+
+  private resolveLocalBinary(os: string, arch: string): string {
+    const filename = `opswatch-agent-${os}-${arch}`;
+    const filePath = join(process.cwd(), 'downloads', filename);
+    if (!existsSync(filePath)) {
+      throw new NotFoundException(
+        `Agent binary "${filename}" is not available on this OpsWatch server. ` +
+          'Rebuild the API image with: docker compose build api',
+      );
+    }
+    return filePath;
+  }
+
+  // ─── SSH helpers ───────────────────────────────────────────────────────────
+
+  private connect(config: ConnectConfig): Promise<Client> {
     return new Promise((resolve, reject) => {
       const conn = new Client();
-      let stdout = '';
-      let stderr = '';
       let debugLog = '';
 
       const timeout = setTimeout(() => {
         conn.destroy();
-        reject(new Error(`SSH operation timed out after ${SSH_TIMEOUT_MS / 1000}s`));
-      }, SSH_TIMEOUT_MS);
+        reject(new Error(`SSH connection timed out after ${SSH_READY_TIMEOUT_MS / 1000}s`));
+      }, SSH_READY_TIMEOUT_MS);
 
       conn.on('ready', () => {
+        clearTimeout(timeout);
         this.logger.debug(`SSH handshake complete for ${config.host}`);
-        conn.exec('bash -s', (err, stream) => {
-          if (err) {
-            clearTimeout(timeout);
-            conn.end();
-            return reject(err);
-          }
-
-          stream
-            .on('close', (code: number) => {
-              clearTimeout(timeout);
-              conn.end();
-              resolve({ stdout, stderr, code: code ?? 0 });
-            })
-            .on('data', (data: Buffer) => {
-              stdout += data.toString();
-            })
-            .stderr.on('data', (data: Buffer) => {
-              stderr += data.toString();
-            });
-
-          stream.write(script);
-          stream.end();
-        });
+        resolve(conn);
       });
 
       conn.on('error', (err: Error & { level?: string }) => {
@@ -132,10 +137,6 @@ export class SshInstallService {
         reject(new Error(userMessage));
       });
 
-      conn.on('banner', (msg) => {
-        this.logger.debug(`[SSH banner] ${msg}`);
-      });
-
       conn.connect({
         ...config,
         debug: (msg: string) => {
@@ -155,36 +156,113 @@ export class SshInstallService {
     });
   }
 
-  // ─── URL helpers ───────────────────────────────────────────────────────────
+  private exec(
+    conn: Client,
+    command: string,
+  ): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve, reject) => {
+      conn.exec(command, (err, stream) => {
+        if (err) return reject(err);
 
-  private apiBaseUrl(apiUrl: string): string {
-    try {
-      const u = new URL(apiUrl);
-      return `${u.protocol}//${u.host}`;
-    } catch {
-      return apiUrl.replace(/\/api\/v1\/?$/, '');
-    }
+        let stdout = '';
+        let stderr = '';
+
+        stream
+          .on('close', (code: number) => {
+            resolve({ stdout, stderr, code: code ?? 0 });
+          })
+          .on('data', (data: Buffer) => {
+            stdout += data.toString();
+          })
+          .stderr.on('data', (data: Buffer) => {
+            stderr += data.toString();
+          });
+      });
+    });
   }
 
-  // ─── Install script builder ────────────────────────────────────────────────
-  //
-  // All paths come from the resolved installPath so the agent can be placed
-  // in /home/{user}/opswatch when the SSH user is not root.
-  //
-  // Privilege handling:
-  //   - File operations under installPath: no sudo needed (user owns the dir)
-  //   - /opt/... paths: automatically uses sudo if available
-  //   - systemd service management: always runs through $PRIV (sudo or "")
+  private sftp(conn: Client): Promise<SFTPWrapper> {
+    return new Promise((resolve, reject) => {
+      conn.sftp((err, sftp) => {
+        if (err) return reject(err);
+        resolve(sftp);
+      });
+    });
+  }
 
-  private buildInstallScript(
+  private sftpWrite(
+    sftp: SFTPWrapper,
+    remotePath: string,
+    data: Buffer,
+    mode = 0o755,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stream = sftp.createWriteStream(remotePath, { mode });
+      stream.on('error', reject);
+      stream.on('close', () => resolve());
+      stream.end(data);
+    });
+  }
+
+  private sftpMkdir(sftp: SFTPWrapper, remotePath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      sftp.mkdir(remotePath, (err) => {
+        // Ignore "already exists" — directory may already be created via shell/sudo
+        if (err) {
+          const msg = String(err.message || '').toLowerCase();
+          const code = String((err as NodeJS.ErrnoException).code ?? '');
+          if (msg.includes('exist') || code === '4' || code === 'EEXIST') {
+            return resolve();
+          }
+          return reject(err);
+        }
+        resolve();
+      });
+    });
+  }
+
+  // ─── Detect remote OS / arch ───────────────────────────────────────────────
+
+  private async detectRemotePlatform(conn: Client): Promise<{ os: string; arch: string }> {
+    const { stdout, code, stderr } = await this.exec(
+      conn,
+      'uname -s | tr "[:upper:]" "[:lower:]"; uname -m',
+    );
+    if (code !== 0) {
+      throw new Error(`Failed to detect remote OS/arch: ${stderr || stdout}`);
+    }
+
+    const [osRaw, archRaw] = stdout.trim().split('\n').map((s) => s.trim());
+    if (osRaw !== 'linux') {
+      throw new Error(`Only Linux is supported for agent install (detected: ${osRaw})`);
+    }
+
+    let arch: string;
+    switch (archRaw) {
+      case 'x86_64':
+        arch = 'amd64';
+        break;
+      case 'aarch64':
+        arch = 'arm64';
+        break;
+      case 'armv7l':
+        arch = 'arm';
+        break;
+      default:
+        throw new Error(`Unsupported architecture: ${archRaw}`);
+    }
+
+    return { os: 'linux', arch };
+  }
+
+  // ─── Build remote setup script (env + systemd; binary already uploaded) ────
+
+  private buildSetupScript(
     apiKey: string,
     apiUrl: string,
     sshUser: string,
     installPath: string,
   ): string {
-    const apiBase = this.apiBaseUrl(apiUrl);
-
-    // Build file contents as base64 to safely embed them — no shell-escaping needed.
     const envContent = Buffer.from(
       [
         `OPSWATCH_API_URL=${apiUrl}`,
@@ -196,7 +274,6 @@ export class SshInstallService {
       ].join('\n'),
     ).toString('base64');
 
-    // Service unit uses the resolved paths and the actual SSH user.
     const serviceContent = Buffer.from(
       [
         '[Unit]',
@@ -227,7 +304,6 @@ export class SshInstallService {
       ].join('\n'),
     ).toString('base64');
 
-    // Bash variables use \$VAR / \${VAR} to avoid TypeScript template interpolation.
     return `#!/bin/bash
 set -euo pipefail
 
@@ -238,9 +314,6 @@ BINARY_NAME="opswatch-agent"
 echo "[OpsWatch] Install path: \$INSTALL_DIR"
 echo "[OpsWatch] Running as user: \$(whoami)"
 
-# ── Privilege escalation helper ───────────────────────────────────────────────
-# systemd and /etc/systemd writes always need root.  File operations inside
-# INSTALL_DIR generally don't (the user owns that directory).
 PRIV=""
 if [ "\$(id -u)" != "0" ]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -251,74 +324,20 @@ if [ "\$(id -u)" != "0" ]; then
   fi
 fi
 
-# ── Create install directory ──────────────────────────────────────────────────
-if ! mkdir -p "\$INSTALL_DIR" 2>/dev/null; then
-  echo "[OpsWatch] Cannot create \$INSTALL_DIR as \$(whoami) — trying with sudo..."
-  if command -v sudo >/dev/null 2>&1; then
-    sudo mkdir -p "\$INSTALL_DIR"
-    sudo chown "\$(id -u):\$(id -g)" "\$INSTALL_DIR"
-  else
-    echo "[OpsWatch] ERROR: Cannot create \$INSTALL_DIR and sudo is unavailable."
-    echo "[OpsWatch] Tip: set Install Path to a directory you own, e.g. /home/\$(whoami)/opswatch"
-    exit 1
-  fi
-fi
-echo "[OpsWatch] Install directory ready: \$INSTALL_DIR"
-
-# ── Detect OS and architecture ────────────────────────────────────────────────
-ARCH="\$(uname -m)"
-case "\$ARCH" in
-  x86_64)  ARCH="amd64" ;;
-  aarch64) ARCH="arm64" ;;
-  armv7l)  ARCH="arm" ;;
-  *) echo "[OpsWatch] Unsupported architecture: \$ARCH"; exit 1 ;;
-esac
-
-OS="\$(uname -s | tr '[:upper:]' '[:lower:]')"
-echo "[OpsWatch] Detected: \${OS}/\${ARCH}"
-
-# ── Download agent binary ─────────────────────────────────────────────────────
-# Primary:  OpsWatch server (binary is bundled in the Docker image)
-# Fallback: GitHub releases
-OPSWATCH_BASE="${apiBase}"
-PRIMARY_URL="\${OPSWATCH_BASE}/api/v1/downloads/opswatch-agent-\${OS}-\${ARCH}"
-FALLBACK_URL="https://github.com/opswatch/agent/releases/latest/download/opswatch-agent-\${OS}-\${ARCH}"
-
-download_binary() {
-  local url="\$1"
-  echo "[OpsWatch] Trying: \$url"
-  if command -v wget >/dev/null 2>&1; then
-    wget -qO "\$INSTALL_DIR/\$BINARY_NAME" "\$url" && return 0
-  elif command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "\$INSTALL_DIR/\$BINARY_NAME" "\$url" && return 0
-  fi
-  return 1
-}
-
-if download_binary "\$PRIMARY_URL"; then
-  echo "[OpsWatch] Downloaded from OpsWatch server"
-elif download_binary "\$FALLBACK_URL"; then
-  echo "[OpsWatch] Downloaded from GitHub releases"
-else
-  echo "[OpsWatch] ERROR: All download sources failed."
+if [ ! -x "\$INSTALL_DIR/\$BINARY_NAME" ]; then
+  echo "[OpsWatch] ERROR: Agent binary missing at \$INSTALL_DIR/\$BINARY_NAME"
   exit 1
 fi
+echo "[OpsWatch] Binary present: \$INSTALL_DIR/\$BINARY_NAME"
 
-chmod +x "\$INSTALL_DIR/\$BINARY_NAME"
-echo "[OpsWatch] Binary installed: \$INSTALL_DIR/\$BINARY_NAME"
-
-# ── Write environment config ──────────────────────────────────────────────────
 echo "${envContent}" | base64 -d > "\$INSTALL_DIR/.env"
 chmod 600 "\$INSTALL_DIR/.env"
 echo "[OpsWatch] Config written: \$INSTALL_DIR/.env"
 
-# ── Write systemd service unit ────────────────────────────────────────────────
-# tee is used so that \$PRIV (sudo) applies to the write, not just the echo.
 echo "${serviceContent}" | base64 -d | \$PRIV tee "/etc/systemd/system/\$SERVICE_NAME.service" > /dev/null
 \$PRIV chmod 644 "/etc/systemd/system/\$SERVICE_NAME.service"
 echo "[OpsWatch] Systemd service created"
 
-# ── Enable and start service ──────────────────────────────────────────────────
 \$PRIV systemctl daemon-reload
 \$PRIV systemctl enable "\$SERVICE_NAME" >/dev/null 2>&1
 \$PRIV systemctl restart "\$SERVICE_NAME"
@@ -371,9 +390,17 @@ echo "[OpsWatch] Installation complete — path: \$INSTALL_DIR"
       this.configService.get<string>('OPSWATCH_API_URL') ||
       'http://localhost:4000/api/v1';
 
-    // Resolve the install path: custom → root default → user home default
-    const installPath = this.resolveInstallPath(sshUser, params.installPath);
+    if (this.isUnreachableFromInternet(resolvedApiUrl)) {
+      // Still allow install (SFTP no longer needs callback), but agent won't report
+      // unless the API is reachable from the remote host.
+      this.logger.warn(
+        `API URL "${resolvedApiUrl}" looks like a private/local address. ` +
+          `The agent will install, but may not be able to push metrics from ${host}. ` +
+          `Set PUBLIC_API_URL (or the form "OpsWatch API URL") to an address reachable from the remote server.`,
+      );
+    }
 
+    const installPath = this.resolveInstallPath(sshUser, params.installPath);
     this.logger.log(
       `Install path resolved to: "${installPath}" for user "${sshUser}"`,
     );
@@ -397,30 +424,111 @@ echo "[OpsWatch] Installation complete — path: \$INSTALL_DIR"
       },
     };
 
-    const script = this.buildInstallScript(
-      server.apiKey,
-      resolvedApiUrl,
-      sshUser,
-      installPath,
-    );
+    let conn: Client | null = null;
+    const installLog: string[] = [];
+    const log = (line: string) => {
+      installLog.push(line);
+      this.logger.log(line);
+    };
+
+    const overallTimeout = setTimeout(() => {
+      conn?.destroy();
+    }, SSH_TIMEOUT_MS);
 
     try {
-      const result = await this.runScript(connectConfig, script);
+      conn = await this.connect(connectConfig);
 
-      if (result.code !== 0) {
-        await this.serversService.delete(server.id);
-        const detail = (result.stderr || result.stdout).slice(-2000);
-        throw new InternalServerErrorException(
-          `Agent installation failed (exit code ${result.code}):\n${detail}`,
+      // 1) Detect platform
+      const { os, arch } = await this.detectRemotePlatform(conn);
+      log(`[OpsWatch] Detected remote platform: ${os}/${arch}`);
+
+      // 2) Resolve + read local binary
+      const localBinary = this.resolveLocalBinary(os, arch);
+      const binaryBuf = readFileSync(localBinary);
+      log(`[OpsWatch] Uploading agent binary (${(binaryBuf.length / 1024 / 1024).toFixed(1)} MB) via SFTP…`);
+
+      // 3) Ensure install dir exists (may need sudo for /opt)
+      const mkdirResult = await this.exec(
+        conn,
+        `mkdir -p "${installPath}" 2>/dev/null || sudo mkdir -p "${installPath}"; ` +
+          `sudo chown "$(id -u):$(id -g)" "${installPath}" 2>/dev/null || true`,
+      );
+      if (mkdirResult.code !== 0) {
+        throw new Error(
+          `Cannot create install directory ${installPath}: ${mkdirResult.stderr || mkdirResult.stdout}`,
         );
+      }
+
+      // 4) SFTP upload binary
+      const sftp = await this.sftp(conn);
+      try {
+        await this.sftpMkdir(sftp, installPath);
+        await this.sftpWrite(sftp, `${installPath}/opswatch-agent`, binaryBuf, 0o755);
+      } finally {
+        sftp.end();
+      }
+      log(`[OpsWatch] Binary uploaded to ${installPath}/opswatch-agent`);
+
+      // 5) Write config + systemd + start (binary already on disk via SFTP)
+      const setupScript = this.buildSetupScript(
+        server.apiKey,
+        resolvedApiUrl,
+        sshUser,
+        installPath,
+      );
+      const setupResult = await new Promise<{
+        stdout: string;
+        stderr: string;
+        code: number;
+      }>((resolve, reject) => {
+        conn!.exec('bash -s', (err, stream) => {
+          if (err) return reject(err);
+          let stdout = '';
+          let stderr = '';
+          stream
+            .on('close', (code: number) => {
+              resolve({ stdout, stderr, code: code ?? 0 });
+            })
+            .on('data', (d: Buffer) => {
+              stdout += d.toString();
+            })
+            .stderr.on('data', (d: Buffer) => {
+              stderr += d.toString();
+            });
+          stream.write(setupScript);
+          stream.end();
+        });
+      });
+
+      if (setupResult.stdout) {
+        setupResult.stdout
+          .split('\n')
+          .filter(Boolean)
+          .forEach((line) => log(line));
+      }
+
+      if (setupResult.code !== 0) {
+        const detail = (setupResult.stderr || setupResult.stdout).slice(-2000);
+        await this.serversService.delete(server.id);
+        throw new InternalServerErrorException(
+          `Agent installation failed (exit code ${setupResult.code}):\n${detail}`,
+        );
+      }
+
+      let message = `Agent installed and started — path: ${installPath}`;
+      if (this.isUnreachableFromInternet(resolvedApiUrl)) {
+        message +=
+          `. Warning: API URL "${resolvedApiUrl}" is a private/local address — ` +
+          `the agent may not reach OpsWatch from this host. Set PUBLIC_API_URL to a publicly reachable URL ` +
+          `(or pass "OpsWatch API URL" in the install form), then restart the agent.`;
       }
 
       this.logger.log(`Agent installed on ${host} at ${installPath} (server ${server.id})`);
       return {
         server,
-        installLog: result.stdout,
+        installLog: installLog.join('\n'),
         installPath,
-        message: `Agent installed and started — path: ${installPath}`,
+        message,
       };
     } catch (err) {
       if (err instanceof InternalServerErrorException) throw err;
@@ -429,7 +537,12 @@ echo "[OpsWatch] Installation complete — path: \$INSTALL_DIR"
       } catch {
         this.logger.warn(`Could not roll back server ${server.id} after install failure`);
       }
-      throw new InternalServerErrorException(err.message);
+      throw new InternalServerErrorException(
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      clearTimeout(overallTimeout);
+      conn?.end();
     }
   }
 
